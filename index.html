@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>UNM CS 412/512 HW3</title>
+  <style>
+    body {
+      background: #111;
+      color: #ccc;
+      font-family: monospace;
+    }
+
+    textarea {
+      background: #222;
+      color: #0f0;
+      font: 14px monospace;
+      width: 400px;
+      height: 250px;
+    }
+
+    canvas {
+      border: 1px solid #444;
+    }
+
+    /* CONTROL PANEL FOR OBJECT PICKER */
+    .control-panel {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      padding: 15px;
+      border-radius: 6px;
+      width: 180px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .control-panel h3 {
+      margin: 0;
+      font-size: 15px;
+      color: #fff;
+      border-bottom: 1px solid #444;
+      padding-bottom: 6px;
+    }
+
+    .control-panel select {
+      background: #2a2a2a;
+      color: #0f0;
+      border: 1px solid #555;
+      padding: 6px;
+      font-family: monospace;
+      width: 100%;
+      cursor: pointer;
+    }
+
+
+  </style>
+</head>
+
+<body>
+  <h2>Interactive Controls & Geometric Primitives</h2>
+  <p>Edit vertex and fragment shaders on the left to get the result instantly.<br>
+  Use mouse to drag and rotate the cube. <br>
+  Use arrow keys and w, s keys to move the camera.<br>
+  Save your code to source file if you want to save it.<br>
+  Press F12 to see the console for debugging.</p>
+
+  <div style="display: flex; gap: 10px; align-items: flex-start;">
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div>
+        <b>Vertex Shader</b><br>
+        <textarea id="vertEditor"></textarea>
+      </div>
+      <div>
+        <b>Fragment Shader</b><br>
+        <textarea id="fragEditor"></textarea>
+      </div>
+    </div>
+    <div>
+      <canvas id="glcanvas" width="600" height="600"></canvas>
+    </div>
+
+    <div class="control-panel">
+      <h3>Kinematic Joint Controls</h3>
+      
+      <label for="slewSlider">Cabin Slew Yaw <span id="valSlew">0°</span></label>
+      <input type="range" id="slewSlider" min="-180" max="180" step="1" value="0">
+
+      <label for="boomSlider">Boom Pitch <span id="valBoom">30°</span></label>
+      <input type="range" id="boomSlider" min="-15" max="75" step="1" value="30">
+
+      <label for="armSlider">Forearm Pitch <span id="valArm">-45°</span></label>
+      <input type="range" id="armSlider" min="-90" max="45" step="1" value="-45">
+
+      <label for="bucketSlider">Bucket Curl <span id="valBucket">-20°</span></label>
+      <input type="range" id="bucketSlider" min="-90" max="60" step="1" value="-20">
+
+      <h3 style="margin-top: 10px;">Animation</h3>
+      <label><input type="checkbox" id="autoAnim"> Auto-Cycle Motion</label>
+    </div>
+
+  </div>
+
+  <!-- Vertex shader -->
+  <script id="vertex-shader" type="x-shader/x-vertex">#version 300 es
+    precision mediump float;
+    in vec3 aPosition;
+    in vec3 aColor;
+    in vec2 aTexCoord;
+
+    uniform float uTime; 
+    uniform mat4 uModelViewMatrix;
+    uniform mat4 uProjectionMatrix;
+    uniform mat4 uModelTransformationMatrix;
+
+    out vec3 vColor;
+    out vec2 vTexCoord;
+
+    void main() {
+      gl_Position = uProjectionMatrix * uModelViewMatrix * uModelTransformationMatrix * vec4(aPosition,1.0);
+      vColor = aColor;
+      vTexCoord = aTexCoord;
+    }
+  </script>
+
+  <!-- Fragment Shader -->
+  <script id="fragment-shader" type="x-shader/x-fragment">#version 300 es
+    precision mediump float;
+    in vec3 vColor;
+    in vec2 vTexCoord;
+
+    uniform float uTime;
+    uniform vec3 uColorTint;
+    uniform int uUseTexture;
+    uniform sampler2D uSampler;
+
+    out vec4 fragColor;
+
+    void main() {
+      fragColor = texture(uSampler, vTexCoord) * vec4(uColorTint,1.0);
+    }
+
+  </script>
+
+  <script src="primitives.js"></script>
+  <script src="transformations.js"></script>
+
+  <script>
+    function createShader(gl, type, source) {
+      let shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        throw new Error(gl.getShaderInfoLog(shader));
+      }
+      return shader;
+    }
+
+    function createProgram(gl, vsSource, fsSource) {
+      let vs = createShader(gl, gl.VERTEX_SHADER, vsSource);
+      let fs = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+      let prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        throw new Error(gl.getProgramInfoLog(prog));
+      }
+      return prog;
+    }
+
+    // WebGL setup
+    const canvas = document.getElementById("glcanvas");
+    const gl = canvas.getContext("webgl2");
+    if (!gl) alert("WebGL2 not supported");
+
+    let vertEditor = document.getElementById("vertEditor");
+    let fragEditor = document.getElementById("fragEditor");
+    vertEditor.value = document.getElementById("vertex-shader").textContent.trim();
+    fragEditor.value = document.getElementById("fragment-shader").textContent.trim();
+
+    var program;
+    var posLoc = -1, colorLoc = -1, texCoordLoc = -1;
+    var uMVM, uPM, uMTM, uColorLoc, uSamplerLoc;
+    var catTexture, whiteTexture;
+
+    function initShaderProgram() {
+      try {
+        program = createProgram(gl, vertEditor.value, fragEditor.value);
+        gl.useProgram(program);
+
+        posLoc = gl.getAttribLocation(program, "aPosition");
+        colorLoc = gl.getAttribLocation(program, "aColor");
+        texCoordLoc = gl.getAttribLocation(program, "aTexCoord");
+
+        uMVM = gl.getUniformLocation(program, "uModelViewMatrix");
+        uPM = gl.getUniformLocation(program, "uProjectionMatrix");
+        uMTM = gl.getUniformLocation(program, "uModelTransformationMatrix");
+        uColorLoc = gl.getUniformLocation(program, "uColorTint");
+        uSamplerLoc = gl.getUniformLocation(program, "uSampler");
+
+      } catch (e) { console.error(e); }
+    }
+
+    function createWhiteTexture(gl) {
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
+      return tex;
+    }
+    initShaderProgram();
+    vertEditor.onkeyup = initShaderProgram;
+    fragEditor.onkeyup = initShaderProgram;
+
+    function setupPrimitivesVAO(primitive) {
+      let vao = gl.createVertexArray();
+      gl.bindVertexArray(vao);
+
+      // position buffer
+      let vbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, primitive.positions, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(posLoc);
+      gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+
+      // color buffer
+      let cbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, cbo);
+      gl.bufferData(gl.ARRAY_BUFFER, primitive.colors, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(colorLoc);
+      gl.vertexAttribPointer(colorLoc, 3, gl.FLOAT, false, 0, 0);
+
+      // texture coordinate buffer
+      if (primitive.texCoords && typeof texCoordLoc !== 'undefined' && texCoordLoc !== -1) {
+        let tbo = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, tbo);
+        gl.bufferData(gl.ARRAY_BUFFER, primitive.texCoords, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(texCoordLoc);
+        gl.vertexAttribPointer(texCoordLoc, 2, gl.FLOAT, false, 0, 0);
+      }
+
+      // index buffer
+      let ibo = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, primitive.indices, gl.STATIC_DRAW);
+
+
+      gl.bindVertexArray(null);
+      return {vao, count: primitive.indices.length};
+
+    }
+
+    // initiallizing the shapes
+    const shapes = {
+      cube: setupPrimitivesVAO(createCube()),
+      prism: setupPrimitivesVAO(createPrism()),
+      torus: setupPrimitivesVAO(createTorus(0.8, 0.25, 32, 16))
+    };
+
+      
+    function createCatTexture(gl) {
+      const c = document.createElement("canvas");
+      c.width = 512;
+      c.height = 512;
+      const ctx = c.getContext("2d");
+
+      // Base Plate Metallic Silver
+      ctx.fillStyle = "#c8cbd0";
+      ctx.fillRect(0, 0, 512, 512);
+
+      //Steel Plate Rim DARK GREY
+      ctx.fillStyle = "#8a8f98";
+      ctx.fillRect(0, 0, 512, 28);
+      ctx.fillRect(0, 484, 512, 28);
+      ctx.fillRect(0, 0, 28, 512);
+      ctx.fillRect(484, 0, 28, 512);
+
+      // Inner Highlight Rim 
+      ctx.strokeStyle = "#e8eaed";
+      ctx.lineWidth = 6;
+      ctx.strokeRect(32, 32, 448, 448);
+
+      //Central Recessed Emblem Badge DARK CHARCOAL GRAY
+      ctx.fillStyle = "#1e2024";
+      ctx.beginPath();
+      ctx.roundRect ? ctx.roundRect(70, 110, 372, 290, 24) : ctx.rect(70, 110, 372, 290);
+      ctx.fill();
+
+      // Outer gold trim around the badge
+      ctx.strokeStyle = "#f5b700";
+      ctx.lineWidth = 8;
+      ctx.stroke();
+
+      // Triangle YELLOW CAT Logo
+      ctx.fillStyle = "#f5b700";
+      ctx.beginPath();
+      ctx.moveTo(110, 355);
+      ctx.lineTo(250, 355);
+      ctx.lineTo(180, 225);
+      ctx.closePath();
+      ctx.fill();
+
+      // Bold "CAT" Lettering 
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "900 130px Arial Black, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("CAT", 280, 260);
+
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);
+      gl.generateMipmap(gl.TEXTURE_2D);
+
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+
+      return tex;
+    }
+
+    catTexture = createCatTexture(gl);
+    whiteTexture = createWhiteTexture(gl);
+
+    function drawMesh(mesh, matrix, color = [1.0, 1.0, 1.0], texture = null) {
+      gl.bindVertexArray(mesh.vao);
+      gl.uniformMatrix4fv(uMTM, false, matrix);
+      gl.uniform3fv(uColorLoc, color);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, texture || whiteTexture);
+      gl.uniform1i(uSamplerLoc, 0);
+
+      
+
+      gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
+    }
+
+    // Mouse and keyboard interactions
+    let mouseDown = false, lastX, lastY, rotX = 0.35, rotY = -0.65;
+    let camX = 0, camY = -0.5, camZ = -9;
+    canvas.addEventListener('mousedown', e => { mouseDown = true; lastX = e.clientX; lastY = e.clientY; });
+    canvas.addEventListener('mouseup', () => mouseDown = false);
+    canvas.addEventListener('mousemove', e => {
+      if (!mouseDown) return;
+      let dx = e.clientX - lastX;
+      let dy = e.clientY - lastY;
+      rotY += dx * 0.01;
+      rotX += dy * 0.01;
+      lastX = e.clientX; lastY = e.clientY;
+    });
+
+    document.addEventListener('keydown', e => {
+      const step = 0.2;
+      switch (e.key) {
+        case 'ArrowUp': camY -= step; break;
+        case 'ArrowDown': camY += step; break;
+        case 'ArrowLeft': camX += step; break;
+        case 'ArrowRight': camX -= step; break;
+        case 'w': camZ += step; break;
+        case 's': camZ -= step; break;
+      }
+    });
+
+    // Label updates
+    ['slew', 'boom', 'arm', 'bucket'].forEach(id => {
+      let slider = document.getElementById(id + 'Slider');
+      let label = document.getElementById('val' + id.charAt(0).toUpperCase() + id.slice(1));
+      slider.addEventListener('input', () => { label.textContent = slider.value + '°'; });
+    });
+
+    // Projection setup
+    let fov = Math.PI / 4, aspect = canvas.width / canvas.height, zNear = 0.1, zFar = 100;
+    let proj = perspective(fov, aspect, zNear, zFar);
+    let startTime = Date.now();
+
+    function render() {
+      gl.enable(gl.DEPTH_TEST);
+      gl.clearColor(0.05, 0.05, 0.08, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+      let speed = 1.0;
+      let t = ((Date.now() - startTime) / 1000.0) * speed;
+      let auto = document.getElementById('autoAnim').checked;
+
+      let degToRad = Math.PI / 180;
+      let slewAngle = parseFloat(document.getElementById('slewSlider').value) * degToRad;
+      let boomAngle = parseFloat(document.getElementById('boomSlider').value) * degToRad;
+      let armAngle  = parseFloat(document.getElementById('armSlider').value) * degToRad;
+      let bucketAngle = parseFloat(document.getElementById('bucketSlider').value) * degToRad;
+
+      if (auto) {
+        slewAngle += Math.sin(t * 1.0) * 0.7;
+        boomAngle += Math.sin(t * 1.5) * 0.3;
+        armAngle += Math.cos(t * 1.5) * 0.4;
+        bucketAngle += Math.sin(t * 2.5) * 0.5;
+      }
+
+      // camera view setup
+      let view = mat4Identity();
+      view = mat4Translate(view, [camX, camY, camZ]);
+      view = mat4RotateX(view, rotX);
+      view = mat4RotateY(view, rotY);
+      
+      gl.uniformMatrix4fv(uPM, false, proj);
+      gl.uniformMatrix4fv(uMVM, false, view);
+
+      const COLOR_TRACKS    = [0.70, 0.70, 0.70]; 
+      const COLOR_BEARING   = [0.42, 0.45, 0.48]; 
+      const COLOR_CAT_YELLOW = [0.96, 0.72, 0.10]; 
+      const COLOR_BUCKET    = [0.20, 0.20, 0.20]; 
+
+      // Level 1 Fixed Undercarriage Base CUBE
+      let mBase = mat4Identity();
+      let mBaseDraw = mat4Translate(mBase, [0.0, -0.4, 0.0]);
+      mBaseDraw = mat4Scale(mBaseDraw, [1.4, 0.45, 1.1]);
+      drawMesh(shapes.cube, mBaseDraw, COLOR_TRACKS, catTexture);
+
+      // Level 2 Slew Bearing Turntable TORUS - Rotates around Y
+      let mTurntable = mat4Translate(mBase, [0.0, 0.1, 0.0]);
+      mTurntable = mat4RotateY(mTurntable, slewAngle);
+      let mTurntableDraw = mat4Scale(mTurntable, [0.65, 0.6, 0.65]);
+      drawMesh(shapes.cube, mTurntableDraw, COLOR_BEARING, whiteTexture);
+
+      // Level 3 Main Boom CUBE - Hinges around Z
+      let mBoom = mat4Translate(mTurntable, [0.5, 0.25, 0.0]);
+      mBoom = mat4RotateZ(mBoom, boomAngle);
+      let mBoomDraw = mat4Translate(mBoom, [1.0, 0.0, 0.0]);
+      mBoomDraw = mat4Scale(mBoomDraw, [1.0, 0.18, 0.18]);
+      drawMesh(shapes.cube, mBoomDraw, COLOR_CAT_YELLOW);
+
+      // Level 4 Forearm CUBE - Hinges around Z at boom tip 
+      let mArm = mat4Translate(mBoom, [2.0, 0.0, 0.0]);
+      mArm = mat4RotateZ(mArm, armAngle);
+      let mArmDraw = mat4Translate(mArm, [0.8, 0.0, 0.0]);
+      mArmDraw = mat4Scale(mArmDraw, [0.8, 0.14, 0.14]);
+      drawMesh(shapes.cube, mArmDraw, COLOR_CAT_YELLOW);
+
+      // Level 5 Grapple PRISM - Hinges around Z at forearm tip
+      let mBucket = mat4Translate(mArm, [1.6, 0.0, 0.0]);
+      mBucket = mat4RotateZ(mBucket, bucketAngle);
+      let mBucketDraw = mat4Translate(mBucket, [0.35, -0.15, 0.0]);
+      mBucketDraw = mat4Scale(mBucketDraw, [0.35, 0.35, 0.35]);
+      drawMesh(shapes.prism, mBucketDraw, COLOR_BUCKET);
+
+      requestAnimationFrame(render);
+    }
+
+    requestAnimationFrame(render);
+  
+  </script>
+</body>
+
+</html>
